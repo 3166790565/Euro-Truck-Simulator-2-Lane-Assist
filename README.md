@@ -2,6 +2,8 @@
 > **ETS2LA V2 is still in development!** Expect bugs, broken features, and crashes.
 > Check [this video](https://www.youtube.com/watch?v=EgZp05tA5ks) for a preview of the current features.
 
+**Language/语言/言語:** [English](README.md) | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-TW.md) | [日本語](README.ja.md)
+
 ![](ETS2LA/Assets/markdown_logo.png)
 
 

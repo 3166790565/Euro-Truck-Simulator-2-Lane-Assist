@@ -191,7 +191,23 @@ def color_title_bar(theme: Literal["dark", "light"] = "dark"):
         time.sleep(0.01)
         
         hwnd = win32gui.FindWindow(None, variables.APPTITLE)
-        returnCode = windll.dwmapi.DwmSetWindowAttribute(hwnd, 35, byref(c_int(colors[theme])), sizeof(c_int))
+        if hwnd == 0:  # 如果没有找到窗口
+            if time.perf_counter() - sinceStart > 10:
+                logging.error("Couldn't find the ETS2LA window. Is your PC powerful enough? Use https://app.ets2la.com if you think you should be able to run it.")
+                dont_check_window_open = True
+                break
+            continue  # 继续尝试查找窗口
+            
+        # 找到窗口后尝试设置属性
+        try:
+            returnCode = windll.dwmapi.DwmSetWindowAttribute(hwnd, 35, byref(c_int(colors[theme])), sizeof(c_int))
+            if returnCode != 0 and time.perf_counter() - sinceStart > 10:
+                logging.warning("Found ETS2LA window but couldn't set title bar color. Continuing anyway.")
+                returnCode = 0  # 强制退出循环
+        except Exception as e:
+            if time.perf_counter() - sinceStart > 10:
+                logging.warning(f"Error setting window attributes: {e}. Continuing anyway.")
+                returnCode = 0  # 强制退出循环
         
         set_window_icon(variables.ICONPATH)
         if time.perf_counter() - sinceStart > 10:
