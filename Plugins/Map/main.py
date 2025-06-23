@@ -62,7 +62,7 @@ class Plugin(ETS2LAPlugin):
         name="plugins.map",
         description="plugins.map.description",
         version="2.0.0",
-        modules=["SDKController", "TruckSimAPI", "Steering", "Route"],
+        modules=["SDKController", "TruckSimAPI", "Steering", "Route", "Traffic"],
         tags=["Base", "Steering"],
         ui_filename="ui.py",
     )

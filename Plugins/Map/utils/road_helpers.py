@@ -326,3 +326,52 @@ def get_closest_lane(item, x: float, z: float, return_distance:bool = False) -> 
         return closest_lane_id, closest_point_distance
     
     return closest_lane_id
+
+def is_vehicle_in_lane(vehicle, lane):
+    """判断车辆是否在指定车道上"""
+    # 获取车辆的四个角点
+    corners = vehicle.get_corners()
+    
+    # 获取车道的边界点
+    lane_points = lane.points
+    if len(lane_points) < 2:
+        return False
+    
+    # 简化：检查车辆中心点是否在车道附近
+    vehicle_center = (vehicle.position.x, vehicle.position.z)
+    
+    # 找到最近的车道点
+    min_distance = float('inf')
+    for i in range(len(lane_points) - 1):
+        p1 = (lane_points[i].x, lane_points[i].z)
+        p2 = (lane_points[i+1].x, lane_points[i+1].z)
+        
+        # 计算点到线段的距离
+        distance = point_to_line_distance(vehicle_center, p1, p2)
+        min_distance = min(min_distance, distance)
+    
+    # 如果距离小于车道宽度的一半，认为车辆在车道上
+    return min_distance < (lane.width / 2 if hasattr(lane, 'width') else 2.25)
+
+def point_to_line_distance(point, line_start, line_end):
+    """计算点到线段的距离"""
+    x, y = point
+    x1, y1 = line_start
+    x2, y2 = line_end
+    
+    # 线段长度的平方
+    l2 = (x2 - x1)**2 + (y2 - y1)**2
+    
+    # 如果线段长度为0，直接返回点到起点的距离
+    if l2 == 0:
+        return math.sqrt((x - x1)**2 + (y - y1)**2)
+    
+    # 计算投影比例 t
+    t = max(0, min(1, ((x - x1) * (x2 - x1) + (y - y1) * (y2 - y1)) / l2))
+    
+    # 计算投影点
+    projection_x = x1 + t * (x2 - x1)
+    projection_y = y1 + t * (y2 - y1)
+    
+    # 返回点到投影点的距离
+    return math.sqrt((x - projection_x)**2 + (y - projection_y)**2)

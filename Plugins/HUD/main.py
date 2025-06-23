@@ -753,6 +753,16 @@ class Plugin(ETS2LAPlugin):
                         fade=Fade(prox_fade_end=0, prox_fade_start=0, dist_fade_end=100, dist_fade_start=100),
                     )
                 )
+            elif status == "unsafe":
+                self.lane_change_data.append(
+                    Text(
+                        Point(-70 * self.scaling, 30 * self.scaling, anchor=anchor),
+                        "等待目标车道内的车辆驶离" + dots,
+                        size=16 * self.scaling,
+                        color=Color(255, 100, 100),  # 红色警告
+                        fade=Fade(prox_fade_end=0, prox_fade_start=0, dist_fade_end=100, dist_fade_start=100),
+                    )
+                )
             elif "executing" in status:
                 percentage = round(float(status.split(":")[1]) * 100)
                 self.lane_change_data.append(

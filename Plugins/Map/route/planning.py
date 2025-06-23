@@ -11,7 +11,109 @@ import logging
 import math
 import time
 
+# 存储变道相关的全局状态
+lane_change_state = {
+    "target_lane_index": -1,  # 目标车道索引
+    "current_lane_index": -1,  # 当前车道索引
+    "is_waiting_for_safety": False,  # 是否正在等待安全
+    "last_check_time": 0  # 上次检查时间
+}
+
 importlib.reload(rc)
+
+def is_lane_change_safe(current_lane_index, target_lane_index):
+    """检查变道是否安全
+    
+    :param int current_lane_index: 当前车道索引
+    :param int target_lane_index: 目标车道索引
+    :return bool: 变道是否安全
+    """
+    # 获取所有车辆
+    vehicles = data.plugin.modules.Traffic.run()
+    if vehicles is None or vehicles == []:
+        return True  # 没有车辆，变道安全
+    
+    # 计算目标车道的边界
+    if len(data.route_plan) == 0 or len(data.route_plan[0].items) == 0:
+        return True  # 没有路线计划，无法判断
+        
+    current_lane = data.route_plan[0].items[0].item.lanes[current_lane_index]
+    target_lane = data.route_plan[0].items[0].item.lanes[target_lane_index]
+    
+    # 获取当前车辆位置和方向
+    truck_x = data.truck_x
+    truck_z = data.truck_z
+    truck_rotation = data.truck_rotation
+    truck_speed = data.truck_speed
+    
+    # 计算车头和货物总长度A
+    total_length = 0
+    has_trailer = False
+    truck_length = 0
+    
+    try:
+        # 检查是否有货物/拖车
+        truck_data = data.plugin.modules.TruckSimAPI.API.update()
+        has_trailer = truck_data['configBool']['isCargoLoaded'] if 'configBool' in truck_data and 'isCargoLoaded' in truck_data['configBool'] else False
+        
+        # 如果有货物，计算车头和货物的总长度；如果没有货物，只计算车头长度
+        if has_trailer:
+            # 获取车头和货物的总长度
+            truck_data = data.plugin.modules.TruckSimAPI.API.update(trailerData=True)
+            
+            # 计算车头长度
+            if 'configVector' in truck_data and 'truckWheelPositionZ' in truck_data['configVector']:
+                for wheel_pos in truck_data['configVector']['truckWheelPositionZ']:
+                    if wheel_pos != 0:
+                        truck_length = max(truck_length, abs(wheel_pos) * 2)  # 估算车长为轮距的2倍
+            
+            total_length = truck_length
+            
+            # 加上所有拖车的长度
+            if 'trailers' in truck_data:
+                for trailer in truck_data['trailers']:
+                    if 'comBool' in trailer and trailer['comBool']['attached']:
+                        if 'conVector' in trailer and 'hookPositionZ' in trailer['conVector']:
+                            total_length += abs(trailer['conVector']['hookPositionZ']) * 2  # 估算拖车长度
+        else:
+            # 只计算车头长度
+            if 'configVector' in truck_data and 'truckWheelPositionZ' in truck_data['configVector']:
+                for wheel_pos in truck_data['configVector']['truckWheelPositionZ']:
+                    if wheel_pos != 0:
+                        truck_length = max(truck_length, abs(wheel_pos) * 2)  # 估算车长为轮距的2倍
+            total_length = truck_length
+    except Exception as e:
+        # 如果无法获取车辆数据，使用默认长度
+        total_length = 20  # 默认总长度为20米
+        truck_length = 10  # 默认车头长度为10米
+        logging.warning(f"无法获取车辆长度数据，使用默认值: {e}")
+    
+    # 确保总长度至少有最小值
+    if total_length < 10:
+        total_length = 10  # 最小总长度为10米
+    if truck_length < 5:
+        truck_length = 5  # 最小车头长度为5米
+    
+    # 扩大安全检测距离：车头前5米与货箱后10米（如果没有货箱则车头后5米）
+    front_safe_distance = 5  # 车头前方安全距离5米
+    rear_safe_distance = 10 if has_trailer else 5  # 有货箱则后方10米，否则5米
+    
+    # 检查每个车辆是否在目标车道上且在安全检测范围内
+    for vehicle in vehicles:
+        # 判断车辆是否在目标车道上
+        is_in_target_lane = rh.is_vehicle_in_lane(vehicle, target_lane)
+        
+        if is_in_target_lane:
+            # 计算车辆与我们的相对位置
+            vehicle_x = vehicle.position.x
+            vehicle_z = vehicle.position.z
+            distance = math_helpers.DistanceBetweenPoints((vehicle_x, vehicle_z), (truck_x, truck_z))
+            
+            # 如果车辆在扩大的安全检测范围内，变道不安全
+            if distance < (total_length + front_safe_distance + rear_safe_distance):
+                return False
+    
+    return True
 
 def GetRoadsBehindRoad(road: c.Road, include_self:bool = True) -> list[c.Road]:
     if include_self: roads = [road]
@@ -484,15 +586,18 @@ def GetNextNavigationItem():
         return PrefabToRouteSection(next_item, best_lane)
     
 def ResetState():
-    if "indicate" in data.plugin.state.text or "lane change" in data.plugin.state.text:
+    global lane_change_state
+    if "indicate" in data.plugin.state.text or "lane change" in data.plugin.state.text or "等待目标车道内的车辆驶离" in data.plugin.state.text:
         data.plugin.state.text = ""
         data.plugin.globals.tags.lane_change_status = "idle"
+        lane_change_state["is_waiting_for_safety"] = False
     
 was_indicating = False
 def CheckForLaneChangeManual():
-    global was_indicating
+    global was_indicating, lane_change_state
     if type(data.route_plan[0].items[0].item) == c.Prefab:
         was_indicating = False
+        lane_change_state["is_waiting_for_safety"] = False
         return
     
     current_index = data.route_plan[0].lane_index
@@ -501,6 +606,36 @@ def CheckForLaneChangeManual():
     left_lanes = len([lane for lane in lanes if lane.side == "left"])
     # lanes = left_lanes + right_lanes
     
+    # 如果正在等待安全变道，检查是否已经安全或者转向灯已关闭
+    if lane_change_state["is_waiting_for_safety"]:
+        # 检查转向灯是否关闭
+        if not (data.truck_indicating_right or data.truck_indicating_left):
+            lane_change_state["is_waiting_for_safety"] = False
+            data.plugin.globals.tags.lane_change_status = "idle"
+            data.plugin.state.text = ""
+            was_indicating = False
+            return
+        
+        # 检查是否已经安全
+        is_safe = is_lane_change_safe(lane_change_state["current_lane_index"], lane_change_state["target_lane_index"])
+        if is_safe:
+            # 变道已安全，执行变道
+            data.route_plan[0].lane_index = lane_change_state["target_lane_index"]
+            data.route_plan = [data.route_plan[0]]
+            lane_change_state["is_waiting_for_safety"] = False
+            data.plugin.globals.tags.lane_change_status = "idle"
+            data.plugin.state.text = ""
+            return
+        else:
+            # 仍然不安全，继续等待
+            data.plugin.globals.tags.lane_change_status = "unsafe"
+            data.plugin.state.text = "等待目标车道内的车辆驶离"
+            if time.time() - data.last_sound_played > data.sound_play_interval:
+                sounds.Play("warning")  # 播放警告音
+                data.last_sound_played = time.time()
+            return
+    
+    # 新的变道请求
     if (data.truck_indicating_right or data.truck_indicating_left) and not was_indicating:
         was_indicating = True
         current_index = data.route_plan[0].lane_index
@@ -535,13 +670,37 @@ def CheckForLaneChangeManual():
             target_index = 0
         if target_index >= len(lanes):
             target_index = len(lanes) - 1
+            
+        # 检查变道安全性
+        is_safe = is_lane_change_safe(current_index, target_index)
+        
+        # 如果变道不安全，设置状态并发出警告
+        if not is_safe:
+            # 保存变道状态，以便后续检查
+            lane_change_state["current_lane_index"] = current_index
+            lane_change_state["target_lane_index"] = target_index
+            lane_change_state["is_waiting_for_safety"] = True
+            lane_change_state["last_check_time"] = time.time()
+            
+            data.plugin.globals.tags.lane_change_status = "unsafe"
+            data.plugin.state.text = "等待目标车道内的车辆驶离"
+            if time.time() - data.last_sound_played > data.sound_play_interval:
+                sounds.Play("warning")  # 播放警告音
+                data.last_sound_played = time.time()
+            return
+            
         data.route_plan[0].lane_index = target_index
         data.route_plan = [data.route_plan[0]]
 
     elif not data.truck_indicating_left and not data.truck_indicating_right:
         was_indicating = False
+        if lane_change_state["is_waiting_for_safety"]:
+            lane_change_state["is_waiting_for_safety"] = False
+            data.plugin.globals.tags.lane_change_status = "idle"
+            data.plugin.state.text = ""
         
 def CheckForLaneChange():
+    global lane_change_state
     if len(data.route_plan) < 2:
         ResetState()
         CheckForLaneChangeManual()
@@ -557,6 +716,34 @@ def CheckForLaneChange():
         data.plugin.globals.tags.lane_change_status = f"executing:{current.lane_change_factor}"
         data.plugin.state.text = "Executing lane change..."
         return
+    
+    # 如果正在等待安全变道，检查是否已经安全或者转向灯已关闭
+    if lane_change_state["is_waiting_for_safety"]:
+        # 检查转向灯是否关闭
+        if not (data.truck_indicating_right or data.truck_indicating_left):
+            lane_change_state["is_waiting_for_safety"] = False
+            data.plugin.globals.tags.lane_change_status = "idle"
+            data.plugin.state.text = ""
+            return
+        
+        # 检查是否已经安全
+        is_safe = is_lane_change_safe(lane_change_state["current_lane_index"], lane_change_state["target_lane_index"])
+        if is_safe:
+            # 变道已安全，执行变道
+            data.route_plan[0].lane_index = lane_change_state["target_lane_index"]
+            data.route_plan = [data.route_plan[0]]
+            lane_change_state["is_waiting_for_safety"] = False
+            data.plugin.globals.tags.lane_change_status = "idle"
+            data.plugin.state.text = ""
+            return
+        else:
+            # 仍然不安全，继续等待
+            data.plugin.globals.tags.lane_change_status = "unsafe"
+            data.plugin.state.text = "等待目标车道内的车辆驶离"
+            if time.time() - data.last_sound_played > data.sound_play_interval:
+                sounds.Play("warning")  # 播放警告音
+                data.last_sound_played = time.time()
+            return
     
     if len(data.route_plan) < 2:
         return # Too short of a plan
@@ -614,6 +801,25 @@ def CheckForLaneChange():
             target = len(lanes) - 1
             
         if target != current_index:
+            # 检查变道安全性
+            is_safe = is_lane_change_safe(current_index, target)
+            
+            # 如果变道不安全，设置状态并发出警告
+            if not is_safe:
+                # 保存变道状态，以便后续检查
+                lane_change_state["current_lane_index"] = current_index
+                lane_change_state["target_lane_index"] = target
+                lane_change_state["is_waiting_for_safety"] = True
+                lane_change_state["last_check_time"] = time.time()
+                
+                data.plugin.globals.tags.lane_change_status = "unsafe"
+                data.plugin.state.text = "等待目标车道内的车辆驶离"
+                if time.time() - data.last_sound_played > data.sound_play_interval:
+                    sounds.Play("warning")  # 播放警告音
+                    data.last_sound_played = time.time()
+                return
+            
+            # 变道安全，检查是否需要等待用户确认
             planned = current.get_planned_lane_change_distance()
             left = current.distance_left()
             if left > planned and not (data.truck_indicating_right or data.truck_indicating_left):
@@ -624,6 +830,7 @@ def CheckForLaneChange():
                     data.last_sound_played = time.time()
                 return
             else: 
+                # 执行变道
                 data.plugin.state.text = ""
                 logging.info(f"Changing lane from {current_index} to {target}")
                 current.force_lane_change = True
